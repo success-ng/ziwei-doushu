@@ -58,6 +58,10 @@
   --r-pill:999px;
 }
 
+html[data-locale="vi"] {
+  --font: system-ui, 'Segoe UI', 'Helvetica Neue', 'Noto Sans', sans-serif;
+}
+
 /* ─── 暗色模式 Token 覆盖 ──────────────────────────────── */
 [data-theme="dark"] {
   --bg-0: #020810;

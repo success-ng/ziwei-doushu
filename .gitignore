@@ -4,6 +4,7 @@ node_modules/
 .env*
 !.env.example
 dist/
+data/v4/cache/
 *.tsbuildinfo
 .DS_Store
 node_modules

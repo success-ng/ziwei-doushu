@@ -1,11 +1,24 @@
 import type { BirthFormState } from '@/components/BirthForm';
+import { VIETNAM_DEFAULT_LONGITUDE, VIETNAM_UTC_OFFSET_MINUTES } from './cities';
 import type { BirthInfo } from './types';
 import { branchFromSolarMinutes, resolveZiweiDayOffset, shiftGregorianDate } from './true-solar-time';
 
-/** 根据北京时间 + 经度计算真太阳时时辰支 (0-11) */
-export function calcTrueSolarBranch(clockHour: number, clockMinute: number, longitude: number): number {
+/** 钟表时间所在时区的中央经线。不传 utcOffsetMinutes = 北京时间 480 分钟 → 东经 120°。 */
+export function solarMeridian(utcOffsetMinutes?: number): number {
+  return (utcOffsetMinutes ?? 480) / 4;
+}
+
+/** 根据钟表时间 + 经度计算真太阳时时辰支 (0-11)。
+ *  经度修正 =（经度 − 中央经线）× 4。中国不传偏移，中央经线仍是 120，不走均时差。
+ */
+export function calcTrueSolarBranch(
+  clockHour: number,
+  clockMinute: number,
+  longitude: number,
+  utcOffsetMinutes?: number,
+): number {
   const clockMins = clockHour * 60 + clockMinute;
-  const offset = (longitude - 120) * 4;
+  const offset = (longitude - solarMeridian(utcOffsetMinutes)) * 4;
   const solar = ((clockMins + offset) % 1440 + 1440) % 1440;
   if (solar >= 1380 || solar < 60) return 0;
   return Math.floor((solar - 60) / 120) + 1;
@@ -26,8 +39,10 @@ export function formToBirthInfo(form: BirthFormState): BirthInfo {
 
   // 晚子时换日按真太阳时判定，与时辰支同一口径（见 true-solar-time.ts 的 resolveZiweiDayOffset）。
   // 只看钟表 23 点会和经度校正后的时辰错位：东经 100° 钟表 23:30 是真太阳时 22:10 亥时，不该换日。
+  // 中央经线随钟表时区变：不传偏移仍是 120°。只替换经线，不改用均时差。
   if (!form.unknownTime) {
-    const solar = (parseInt(form.clockHour) || 0) * 60 + (parseInt(form.clockMinute) || 0) + (form.longitude - 120) * 4;
+    const meridian = solarMeridian(form.utcOffsetMinutes);
+    const solar = (parseInt(form.clockHour) || 0) * 60 + (parseInt(form.clockMinute) || 0) + (form.longitude - meridian) * 4;
     const normalizedMinutes = ((solar % 1440) + 1440) % 1440;
     hour = branchFromSolarMinutes(normalizedMinutes);
     const dayOffset = resolveZiweiDayOffset({ dayOffset: Math.floor(solar / 1440), normalizedMinutes, branch: hour });
@@ -43,7 +58,7 @@ export function formToBirthInfo(form: BirthFormState): BirthInfo {
     name: form.name || undefined,
     province: form.province || undefined,
     city: form.city || undefined,
-    longitude: form.province ? form.longitude : undefined,
+    longitude: form.province || form.city ? form.longitude : undefined,
   };
 }
 
@@ -63,6 +78,10 @@ export function formToSearchParams(form: BirthFormState): URLSearchParams {
   if (form.province) p.set('p', form.province);
   if (form.city) p.set('c', form.city);
   if (form.longitude && form.longitude !== 120) p.set('lo', String(form.longitude));
+  // 只有非北京时区才写入。老链接没有 tz，读回来仍是中国 / 北京时间。
+  if (form.utcOffsetMinutes != null && form.utcOffsetMinutes !== 480) {
+    p.set('tz', String(form.utcOffsetMinutes));
+  }
   p.set('g', form.gender === 'male' ? 'm' : 'f');
   return p;
 }
@@ -73,6 +92,11 @@ export function searchParamsToForm(params: URLSearchParams): Partial<BirthFormSt
   const month = params.get('m');
   const day = params.get('d');
   if (!year || !month || !day) return null;
+  const utcOffset = readUtcOffset(params);
+  const loRaw = params.get('lo');
+  const longitude = loRaw != null && loRaw !== ''
+    ? parseFloat(loRaw)
+    : (utcOffset.utcOffsetMinutes === VIETNAM_UTC_OFFSET_MINUTES ? VIETNAM_DEFAULT_LONGITUDE : 120);
   return {
     name: params.get('n') || '',
     year,
@@ -83,7 +107,17 @@ export function searchParamsToForm(params: URLSearchParams): Partial<BirthFormSt
     clockMinute: params.get('mi') || '0',
     province: params.get('p') || '',
     city: params.get('c') || '',
-    longitude: parseFloat(params.get('lo') || '120'),
+    longitude,
     gender: params.get('g') === 'f' ? 'female' : 'male',
+    ...utcOffset,
   };
+}
+
+/** tz 只在分享链接里表示非北京的钟表时区（分钟）。缺省或 480 都不写回表单。 */
+function readUtcOffset(params: URLSearchParams): { utcOffsetMinutes?: number } {
+  const raw = params.get('tz');
+  if (raw == null || raw === '') return {};
+  const offset = Number(raw);
+  if (!Number.isFinite(offset) || offset === 480) return {};
+  return { utcOffsetMinutes: offset };
 }

@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import './globals.css';
 import { ThemeProvider } from '@/components/ThemeProvider';
+import { LanguageProvider } from '@/components/LanguageProvider';
 import { Analytics } from '@vercel/analytics/next';
 import { SpeedInsights } from '@vercel/speed-insights/next';
 import { SITE_URL } from '@/lib/site';
@@ -18,7 +19,7 @@ export const metadata: Metadata = {
     description: '基于倪海厦正宗紫微斗数体系，AI深度解读您的命盘格局、大限流年、感情事业财富健康全方位解析',
     url: SITE_URL,
     siteName: '紫微研究',
-    locale: 'zh_CN',
+    locale: 'vi_VN',
     type: 'website',
   },
   // 站长平台验证（拿到 verification code 后填入对应字段，重新部署即可）
@@ -38,13 +39,15 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="zh-CN" suppressHydrationWarning>
+    <html lang="vi" suppressHydrationWarning>
       <head>
-        <script dangerouslySetInnerHTML={{ __html: `(function(){try{var t=localStorage.getItem('ziwei-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);else document.documentElement.setAttribute('data-theme','dark');}catch(e){}})();` }} />
+        <script dangerouslySetInnerHTML={{ __html: `(function(){try{var t=localStorage.getItem('ziwei-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);else document.documentElement.setAttribute('data-theme','dark');var l=localStorage.getItem('ziwei-locale');if(l!=='vi'&&l!=='zh'){l='vi';}document.documentElement.setAttribute('data-locale',l);document.documentElement.lang=l==='vi'?'vi':'zh-CN';}catch(e){}})();` }} />
       </head>
       <body className="min-h-screen">
         <ThemeProvider>
-          {children}
+          <LanguageProvider>
+            {children}
+          </LanguageProvider>
         </ThemeProvider>
         <Analytics />
         <SpeedInsights />

@@ -3,6 +3,7 @@ import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { ZiweiChart, Palace } from '@/lib/ziwei/types';
 import type { TimeView } from './TimeNav';
+import { useI18n } from '@/components/LanguageProvider';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -29,6 +30,22 @@ const TOPICS = [
   { key: 'wealth',      label: '财运' },
   { key: 'health',      label: '健康' },
   { key: 'personality', label: '性格' },
+] as const;
+
+const DATASET_TOPICS = [
+  { key: 'overview', label: '命格' },
+  { key: 'personality', label: '性格' },
+  { key: 'love', label: '感情' },
+  { key: 'career', label: '事业' },
+  { key: 'wealth', label: '财运' },
+  { key: 'health', label: '健康' },
+  { key: 'family', label: '兄弟' },
+  { key: 'children', label: '子女' },
+  { key: 'move', label: '迁移' },
+  { key: 'friends', label: '人际' },
+  { key: 'home', label: '田宅' },
+  { key: 'spirit', label: '福德' },
+  { key: 'parents', label: '父母' },
 ] as const;
 
 const TOPIC_PROMPTS: Record<string, string> = {
@@ -182,11 +199,18 @@ function AiContent({ text, streaming }: { text: string; streaming?: boolean }) {
   );
 }
 
+type DatasetNote = 'translated' | 'no-key' | 'failed' | null;
+
 export default function InsightPanel({ chart, selectedPalace, selectedSiHua }: InsightPanelProps) {
+  const { t, locale } = useI18n();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [activeTopic, setActiveTopic] = useState<string>('overview');
+  const [dataset, setDataset] = useState<Record<string, string> | null>(null);
+  const [datasetStatus, setDatasetStatus] = useState<'loading' | 'ready' | 'absent'>('loading');
+  const [datasetNote, setDatasetNote] = useState<DatasetNote>(null);
+  const datasetStatusRef = useRef<'loading' | 'ready' | 'absent'>('loading');
   const messagesRef = useRef<Message[]>([]); // always-current copy for closures
   const loadingRef = useRef(false);
   const autoLoaded = useRef(false);
@@ -205,15 +229,60 @@ export default function InsightPanel({ chart, selectedPalace, selectedSiHua }: I
     }
   }, [messages]);
 
-  // Auto-generate 命格总览 on mount
+  // Bộ dữ liệu v4.0 có bài luận sẵn theo ngày + giờ địa chi + giới tính.
+  // Có bài thì hiện bài đó, không gọi /api/interpret.
   useEffect(() => {
-    if (autoLoaded.current) return;
-    autoLoaded.current = true;
-    sendMessage(TOPIC_PROMPTS.overview, true);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    let cancelled = false;
+    const info = chart.birthInfo;
+    const params = new URLSearchParams({
+      y: String(info.year),
+      m: String(info.month),
+      d: String(info.day),
+      h: String(info.hour),
+      g: info.gender,
+    });
+    if (locale === 'vi') params.set('lang', 'vi');
+    datasetStatusRef.current = 'loading';
+    setDataset(null);
+    setDatasetNote(null);
+    setDatasetStatus('loading');
+    setActiveTopic('overview');
+    fetch(`/api/dataset-reading?${params}`)
+      .then(res => res.json())
+      .then(data => {
+        if (cancelled) return;
+        if (data?.ok && data.topics && typeof data.topics.overview === 'string') {
+          datasetStatusRef.current = 'ready';
+          setDataset(data.topics);
+          setDatasetStatus('ready');
+          if (data.translated === true) setDatasetNote('translated');
+          else if (data.reason === 'no-key') setDatasetNote('no-key');
+          else if (data.translated === false) setDatasetNote('failed');
+          else setDatasetNote(null);
+          return;
+        }
+        datasetStatusRef.current = 'absent';
+        setDatasetStatus('absent');
+        if (!autoLoaded.current) {
+          autoLoaded.current = true;
+          sendMessage(TOPIC_PROMPTS.overview, true);
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        datasetStatusRef.current = 'absent';
+        setDatasetStatus('absent');
+        if (!autoLoaded.current) {
+          autoLoaded.current = true;
+          sendMessage(TOPIC_PROMPTS.overview, true);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [chart, locale]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Inject palace analysis when palace selected
   useEffect(() => {
+    if (datasetStatusRef.current !== 'absent') return;
     if (!selectedPalace || selectedPalace.branch === lastPalaceBranch.current) return;
     lastPalaceBranch.current = selectedPalace.branch;
 
@@ -242,6 +311,7 @@ ${selectedPalace.name}在命盘中的意义，以及这种星曜配置的整体�
 
   // 注入四化飞化分析
   useEffect(() => {
+    if (datasetStatusRef.current !== 'absent') return;
     if (!selectedSiHua) return;
     const key = `${selectedSiHua.starName}-${selectedSiHua.siHua}-${selectedSiHua.view}`;
     if (key === lastSiHuaKey.current) return;
@@ -337,55 +407,91 @@ ${selectedSiHua.starName}化${selectedSiHua.siHua}落在【${palaceName}】，�
   };
 
   const handleTopicClick = (topicKey: string) => {
-    if (loadingRef.current) return;
     setActiveTopic(topicKey);
-    sendMessage(TOPIC_PROMPTS[topicKey], true);
+    if (datasetStatusRef.current === 'ready') return;
+    if (loadingRef.current) return;
+    const prompt = TOPIC_PROMPTS[topicKey];
+    if (prompt) sendMessage(prompt, true);
   };
 
   const handleSend = () => {
     sendMessage(input);
   };
 
+  const topics = datasetStatus === 'ready' ? DATASET_TOPICS : TOPICS;
+  const datasetText = dataset?.[activeTopic] ?? dataset?.overview ?? '';
+
   return (
-    <div className="flex flex-col h-full rounded-xl overflow-hidden card-glass">
+    <div className="flex flex-col h-[80vh] rounded-xl overflow-hidden card-glass">
 
       {/* ── Topic buttons ── */}
       <div className="flex-shrink-0 px-2 pt-2.5 pb-2" style={{ borderBottom: '1px solid var(--t-border)' }}>
-        <div className="grid grid-cols-6 gap-1">
-          {TOPICS.map(t => {
-            const isActive = activeTopic === t.key;
+        <div className="flex flex-wrap gap-1">
+          {topics.map(topic => {
+            const isActive = activeTopic === topic.key;
             return (
               <button
-                key={t.key}
-                onClick={() => handleTopicClick(t.key)}
-                disabled={loading}
-                className="py-1.5 text-[10px] font-medium rounded-lg transition-all duration-150 disabled:opacity-40"
+                key={topic.key}
+                onClick={() => handleTopicClick(topic.key)}
+                disabled={loading && datasetStatus !== 'ready'}
+                className="px-2 py-1.5 text-[10px] font-medium rounded-lg transition-all duration-150 disabled:opacity-40"
                 style={{
                   background: isActive ? 'rgba(212,168,67,0.12)' : 'transparent',
                   border: `1px solid ${isActive ? 'rgba(212,168,67,0.3)' : 'var(--t-border)'}`,
                   color: isActive ? 'var(--t-gold)' : 'var(--t-faint)',
                 }}
               >
-                {t.label}
+                {t(topic.label)}
               </button>
             );
           })}
         </div>
+        {datasetStatus === 'ready' && (
+          <p className="mt-1.5 text-[10px] leading-snug" style={{ color: 'var(--t-faint)' }}>
+            {locale === 'vi' && datasetNote === 'no-key'
+              ? t('未配置翻译密钥，以下仍是数据集 v4.0 的中文原文。')
+              : locale === 'vi' && datasetNote === 'failed'
+                ? t('越南语翻译失败，以下仍是数据集 v4.0 的中文原文。')
+                : locale === 'vi' && datasetNote === 'translated'
+                  ? t('这段文字来自解读数据集 v4.0，按出生日期、时辰和性别取现成的一篇，已译为越南语。星名、宫名和四化沿用本站译法。')
+                  : t('这段文字来自解读数据集 v4.0，按出生日期、时辰和性别取现成的一篇，不是 AI。原文为中文。')}
+          </p>
+        )}
       </div>
 
       {/* ── Messages ── */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
 
-        {/* Loading state before first message */}
-        {messages.length === 0 && (
+        {datasetStatus === 'loading' && (
           <div className="flex flex-col items-center justify-center h-full text-center">
             <div className="text-4xl mb-3" style={{ color: 'var(--t-gold)', opacity: 0.1 }}>✦</div>
-            <p className="text-[10px] animate-pulse" style={{ color: 'var(--t-faint)' }}>命格解读生成中…</p>
+            <p className="text-[10px] animate-pulse" style={{ color: 'var(--t-faint)' }}>{t('正在读取数据集解读…')}</p>
+          </div>
+        )}
+
+        {datasetStatus === 'ready' && (
+          <div>
+            <div
+              className="text-[9px] tracking-widest mb-2 flex items-center gap-1.5"
+              style={{ color: 'var(--t-faint)' }}
+            >
+              <span style={{ color: 'var(--t-gold)', opacity: 0.4 }}>✦</span>
+              {t('命理解读')}
+            </div>
+            <AiContent text={datasetText} />
+          </div>
+        )}
+
+        {/* Loading state before first message */}
+        {datasetStatus === 'absent' && messages.length === 0 && (
+          <div className="flex flex-col items-center justify-center h-full text-center">
+            <div className="text-4xl mb-3" style={{ color: 'var(--t-gold)', opacity: 0.1 }}>✦</div>
+            <p className="text-[10px] animate-pulse" style={{ color: 'var(--t-faint)' }}>{t('命格解读生成中…')}</p>
           </div>
         )}
 
         <AnimatePresence initial={false}>
-          {messages.map((msg, i) => {
+          {datasetStatus === 'absent' && messages.map((msg, i) => {
             if (msg.role === 'user' && msg.hidden) return null;
 
             if (msg.role === 'user') {
@@ -423,16 +529,17 @@ ${selectedSiHua.starName}化${selectedSiHua.siHua}落在【${palaceName}】，�
                   style={{ color: 'var(--t-faint)' }}
                 >
                   <span style={{ color: 'var(--t-gold)', opacity: 0.4 }}>✦</span>
-                  命理解读
+                  {t('命理解读')}
                 </div>
-                <AiContent text={msg.content} streaming={loading && isLastMsg} />
+                <AiContent text={t(msg.content)} streaming={loading && isLastMsg} />
               </motion.div>
             );
           })}
         </AnimatePresence>
       </div>
 
-      {/* ── Input ── */}
+      {/* ── Input：chỉ khi không có bài trong bộ dữ liệu ── */}
+      {datasetStatus === 'absent' && (
       <div className="flex-shrink-0 px-3 pb-3 pt-2" style={{ borderTop: '1px solid var(--t-border)' }}>
         <div className="flex gap-2">
           <input
@@ -440,7 +547,7 @@ ${selectedSiHua.starName}化${selectedSiHua.siHua}落在【${palaceName}】，�
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleSend()}
-            placeholder="继续追问，如：今年适合换工作吗？"
+            placeholder={t('继续追问，如：今年适合换工作吗？')}
             disabled={loading}
             className="flex-1 rounded-lg px-3 py-2 text-[11px] focus:outline-none transition-colors"
             style={{
@@ -459,10 +566,11 @@ ${selectedSiHua.starName}化${selectedSiHua.siHua}落在【${palaceName}】，�
               color: 'var(--t-gold)',
             }}
           >
-            {loading ? '…' : '追问'}
+            {loading ? '…' : t('追问')}
           </button>
         </div>
       </div>
+      )}
 
     </div>
   );
